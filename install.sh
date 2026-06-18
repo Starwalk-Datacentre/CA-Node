@@ -110,7 +110,7 @@ sudo -u "$CERT_USER" bash -c '
 '
 echo "[*] ~/.ssh configured for $CERT_USER"
 
-echo "$CERT_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload nginx" \
+echo "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx" \
   | sudo tee /etc/sudoers.d/cert-nginx > /dev/null
 sudo chmod 440 /etc/sudoers.d/cert-nginx
 sudo visudo -cf /etc/sudoers.d/cert-nginx \
@@ -174,11 +174,11 @@ echo "════════════════════════�
 echo "  Node is ready. Run this on the control plane:"
 echo ""
 echo "    ca add-node \\"
-echo "       --name <name> \\"
 echo "       --ip $PRIMARY_IP \\"
 echo "       --port $BOOTSTRAP_PORT \\"
 echo "       --user $BOOTSTRAP_USER \\"
 echo "       --pass '$BOOTSTRAP_PASS'"
+echo "       --name <name> \\"
 echo ""
 echo "  Bootstrap Config closes in $BOOTSTRAP_TTL minutes automatically."
 echo "════════════════════════════════════════════════════════"
