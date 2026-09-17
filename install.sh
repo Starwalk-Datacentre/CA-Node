@@ -1,6 +1,15 @@
 #!/bin/bash
+# ca-node install — prepare a target host for CA control plane enrollment.
+# Opens a temporary bootstrap SSH window; the control plane completes enrollment
+# via: ca node add <name> -i <ip> -p 2222 -u bootstrap-* --pass '<password>'
 
 set -euo pipefail
+
+CERTS_DIR="/etc/certs"
+CERT_USER="cert"
+BOOTSTRAP_PORT=2222
+BOOTSTRAP_TTL=15
+
 detect_distro() {
   [[ -f /etc/os-release ]] || { echo "[!] /etc/os-release not found" >&2; exit 1; }
   local id=""
@@ -13,31 +22,37 @@ detect_distro() {
       PKG_INSTALL="apt-get install -y -q"
       PKG_UPDATE="apt-get update -qq"
       SSH_SERVICE="ssh"
+      SSH_PKG="openssh-server"
       ;;
     centos|rhel|almalinux|rocky)
       PKG_INSTALL="yum install -y -q"
-      PKG_UPDATE="yum makecache -q" 
+      PKG_UPDATE="yum makecache -q"
       SSH_SERVICE="sshd"
+      SSH_PKG="openssh-server"
       ;;
     fedora)
       PKG_INSTALL="dnf install -y -q"
       PKG_UPDATE="dnf makecache -q"
       SSH_SERVICE="sshd"
+      SSH_PKG="openssh-server"
       ;;
     amzn)
       PKG_INSTALL="yum install -y -q"
       PKG_UPDATE="yum makecache -q"
       SSH_SERVICE="sshd"
+      SSH_PKG="openssh-server"
       ;;
     alpine)
       PKG_INSTALL="apk add --no-cache"
       PKG_UPDATE="apk update"
       SSH_SERVICE="sshd"
+      SSH_PKG="openssh"
       ;;
     arch|manjaro)
       PKG_INSTALL="pacman -S --noconfirm --needed"
       PKG_UPDATE="pacman -Sy --noconfirm"
       SSH_SERVICE="sshd"
+      SSH_PKG="openssh"
       ;;
     *)
       echo "[!] Unsupported distribution: $OS" >&2
@@ -65,20 +80,51 @@ get_primary_ip() {
   fi
 }
 
+write_sudoers() {
+  local file="$1"
+  local content="$2"
+  echo "$content" | sudo tee "$file" > /dev/null
+  sudo chmod 440 "$file"
+  sudo visudo -cf "$file" || { sudo rm -f "$file"; echo "[!] sudoers syntax error in $file — aborted" >&2; exit 1; }
+}
+
+cleanup_stale_bootstrap() {
+  echo "[*] Cleaning up any prior bootstrap window..."
+
+  # Cancel a pending cleanup timer from a previous run
+  sudo systemctl stop bootstrap-cleanup.service 2>/dev/null || true
+  sudo systemctl reset-failed bootstrap-cleanup.service 2>/dev/null || true
+
+  # Remove stale bootstrap users (bootstrap-xxxxxxxx)
+  while IFS= read -r u; do
+    [[ -n "$u" ]] && sudo userdel -r "$u" 2>/dev/null || true
+  done < <(awk -F: '$1 ~ /^bootstrap-[0-9a-f]{8}$/ {print $1}' /etc/passwd 2>/dev/null || true)
+
+  sudo rm -f /etc/sudoers.d/bootstrap-window
+
+  if sudo grep -q "# Bootstrap window - temporary" /etc/ssh/sshd_config 2>/dev/null; then
+    sudo sed -i '/# Bootstrap window - temporary/,/PermitTTY yes/d' /etc/ssh/sshd_config
+    sudo sshd -t && sudo systemctl reload "$SSH_SERVICE" 2>/dev/null || true
+    echo "[*] Removed stale bootstrap SSH block"
+  fi
+}
+
 BOOTSTRAP_USER="bootstrap-$(openssl rand -hex 4)"
 BOOTSTRAP_PASS="$(openssl rand -base64 24)"
-BOOTSTRAP_PORT=2222
-BOOTSTRAP_TTL=15
-CERTS_DIR="/etc/certs"
-CERT_USER="cert"
 
 echo "[*] Starting node preparation..."
 
 detect_distro
 check_requirements
+cleanup_stale_bootstrap
 
 echo "[*] Refreshing package cache..."
 sudo $PKG_UPDATE
+
+echo "[*] Ensuring SSH server is installed..."
+if ! command -v sshd &>/dev/null && ! command -v /usr/sbin/sshd &>/dev/null; then
+  sudo $PKG_INSTALL "$SSH_PKG"
+fi
 
 if ! command -v setfacl &>/dev/null; then
   echo "[*] Installing acl..."
@@ -110,26 +156,22 @@ sudo -u "$CERT_USER" bash -c '
 '
 echo "[*] ~/.ssh configured for $CERT_USER"
 
-echo "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx" \
-  | sudo tee /etc/sudoers.d/cert-nginx > /dev/null
-sudo chmod 440 /etc/sudoers.d/cert-nginx
-sudo visudo -cf /etc/sudoers.d/cert-nginx \
-  || { sudo rm -f /etc/sudoers.d/cert-nginx; echo "[!] cert-nginx sudoers syntax error — aborted" >&2; exit 1; }
-echo "[*] sudoers entry written for $CERT_USER"
+write_sudoers /etc/sudoers.d/cert-nginx \
+  "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx"
+
+write_sudoers /etc/sudoers.d/cert-ssh-mgmt \
+  "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/tee, /usr/bin/chmod, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/ssh-keygen, /usr/bin/systemctl"
+
+echo "[*] sudoers entries written for $CERT_USER"
 
 sudo useradd -m -s /bin/bash "$BOOTSTRAP_USER"
 echo "$BOOTSTRAP_USER:$BOOTSTRAP_PASS" | sudo chpasswd
 echo "[*] Created bootstrap user: $BOOTSTRAP_USER"
 
-echo "$BOOTSTRAP_USER ALL=(ALL) NOPASSWD: ALL" \
-  | sudo tee /etc/sudoers.d/bootstrap-window > /dev/null
-sudo chmod 440 /etc/sudoers.d/bootstrap-window
-sudo visudo -cf /etc/sudoers.d/bootstrap-window \
-  || { sudo rm -f /etc/sudoers.d/bootstrap-window; echo "[!] bootstrap sudoers syntax error — aborted" >&2; exit 1; }
-echo "[*] Root-level sudoers entry written for $BOOTSTRAP_USER"
+write_sudoers /etc/sudoers.d/bootstrap-window \
+  "$BOOTSTRAP_USER ALL=(ALL) NOPASSWD: ALL"
 
-if ! sudo grep -q "# Bootstrap window - temporary" /etc/ssh/sshd_config; then
-  sudo tee -a /etc/ssh/sshd_config > /dev/null <<EOF
+sudo tee -a /etc/ssh/sshd_config > /dev/null <<EOF
 
 # Bootstrap window - temporary
 Port $BOOTSTRAP_PORT
@@ -137,8 +179,7 @@ Match User $BOOTSTRAP_USER
     PasswordAuthentication yes
     PermitTTY yes
 EOF
-  echo "[*] Bootstrap SSH block added"
-fi
+echo "[*] Bootstrap SSH block added"
 
 sudo sshd -t || { echo "[!] sshd config invalid — reload aborted. Check /etc/ssh/sshd_config" >&2; exit 1; }
 sudo systemctl reload "$SSH_SERVICE"
@@ -151,18 +192,10 @@ sudo systemd-run \
   --on-active="${BOOTSTRAP_TTL}m" \
   --unit=bootstrap-cleanup \
   bash -c "
-    # Remove bootstrap user and its home dir
     userdel -r '$_buser' 2>/dev/null || true
-
-    # Remove the bootstrap sudoers entry
     rm -f /etc/sudoers.d/bootstrap-window
-
-    # Strip the bootstrap SSH block (Port line + Match block)
     sed -i '/# Bootstrap window - temporary/,/PermitTTY yes/d' /etc/ssh/sshd_config
-
-    # Validate before reloading — never reload a broken config
     sshd -t && systemctl restart '$_svc'
-
     echo '[*] Bootstrap window closed'
   "
 echo "[*] Cleanup timer set for ${BOOTSTRAP_TTL} minutes"
@@ -174,10 +207,11 @@ echo "════════════════════════�
 echo "  Node is ready. Run this on the control plane:"
 echo ""
 echo "    ca node add <name> \\"
-echo "       -i $PRIMARY_IP \\"
-echo "       -p $BOOTSTRAP_PORT \\"
-echo "       -u $BOOTSTRAP_USER \\"
-echo "       --pass '$BOOTSTRAP_PASS'"
+echo "      -i $PRIMARY_IP \\"
+echo "      -p $BOOTSTRAP_PORT \\"
+echo "      -u $BOOTSTRAP_USER \\"
+echo "      --pass '$BOOTSTRAP_PASS'"
 echo ""
-echo "  Bootstrap Config closes in $BOOTSTRAP_TTL minutes automatically."
+echo "  Replace <name> with a short node label (e.g. worker-01)."
+echo "  Complete enrollment within $BOOTSTRAP_TTL minutes."
 echo "════════════════════════════════════════════════════════"
