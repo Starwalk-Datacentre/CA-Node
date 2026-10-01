@@ -160,7 +160,7 @@ write_sudoers /etc/sudoers.d/cert-nginx \
   "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx"
 
 write_sudoers /etc/sudoers.d/cert-ssh-mgmt \
-  "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/tee, /usr/bin/chmod, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/ssh-keygen, /usr/bin/systemctl"
+  "$CERT_USER ALL=(ALL) NOPASSWD: /usr/bin/tee, /usr/bin/chmod, /usr/bin/chown, /usr/bin/mkdir, /usr/bin/ssh-keygen, /usr/bin/systemctl, /usr/bin/rm, /bin/rm, /usr/bin/sed, /usr/sbin/sshd, /usr/bin/sshd, /usr/bin/cat, /usr/bin/test, /usr/bin/bash, /usr/bin/visudo"
 
 echo "[*] sudoers entries written for $CERT_USER"
 
@@ -174,6 +174,7 @@ write_sudoers /etc/sudoers.d/bootstrap-window \
 sudo tee -a /etc/ssh/sshd_config > /dev/null <<EOF
 
 # Bootstrap window - temporary
+Port 22
 Port $BOOTSTRAP_PORT
 Match User $BOOTSTRAP_USER
     PasswordAuthentication yes

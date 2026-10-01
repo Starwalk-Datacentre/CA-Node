@@ -1,136 +1,91 @@
 # CA-Node
 
-Node-side bootstrap and configuration scripts for the CA platform.
+Node-side bootstrap script for the CA Control Plane.
 
-This repository contains shell-based logic to prepare a machine to be managed by `Starwalk-Datacentre/CA-Control-Plane`.
+Run this on a machine that is to become a CA-managed node. It prepares the
+host — installs SSH server, sudo, and ACL tooling, creates the `cert`
+management user with a least-privilege sudoers profile, and opens a
+**temporary 15-minute bootstrap window** through which the control plane
+completes enrollment.
+
+- **CA-Node** (this repo) = node-side bootstrap and baseline configuration
+- **CA-Control-Plane** (https://github.com/starwalk-datacentre/ca-cp) = the
+  certificate authority, dashboard, and node lifecycle management
+
+All bootstrap credentials are generated at runtime on the node and printed
+to your terminal — nothing is embedded in this script and nothing is stored
+here.
+
+---
+
+## Install (one command, on the node)
+
+Latest (tracks `main`):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/starwalk-datacentre/ca-node/main/install.sh | sudo bash
+```
+
+Pinned, immutable (recommended for production baselines):
+
+```bash
+curl -sSL https://github.com/starwalk-datacentre/ca-node/releases/latest/download/install.sh | sudo bash
+```
+
+Verify the script before running it (optional but encouraged):
+
+```bash
+curl -sSL https://raw.githubusercontent.com/starwalk-datacentre/ca-node/main/install.sh -o ca-node-install.sh
+sha256sum -c <<< "$(curl -sSL https://raw.githubusercontent.com/starwalk-datacentre/ca-node/main/install.sh.sha256)  ca-node-install.sh"
+sudo bash ca-node-install.sh
+```
+
+---
+
+## What the script does
+
+1. Ensures SSH server, sudo, and ACL tooling are present (installs them when
+   missing; supports Debian/Ubuntu, RHEL-family, and Arch)
+2. Creates `/etc/certs` with ACLs for the `cert` management user
+3. Creates a **temporary bootstrap user** (`bootstrap-XXXXXXXX`) with a
+   random password and `NOPASSWD: ALL` sudo, available for **15 minutes** on
+   port 2222
+4. Writes the least-privilege sudoers profile the `cert` user will use after
+   enrollment (certificate installs, service reloads, key inspections —
+   command-allowlisted, nothing broader)
+5. Prints the exact `ca node add` command to run on the control plane
+
+The script is idempotent: re-running it is safe, and it fails fast on
+unrecoverable errors.
+
+---
+
+## Enroll (on the control plane, within the 15-minute window)
+
+```bash
+ca node add web-01 \
+  -i <node-ip> \
+  -p 2222 \
+  -u bootstrap-XXXXXXXX \
+  --pass '<password printed by the script>'
+```
+
+The control plane then connects via SSH, verifies every step remotely,
+signs the host key, configures sshd to trust the CA, closes the bootstrap
+window, and confirms each stage before reporting success.
 
 ---
 
 ## Relationship to CA-Control-Plane
 
-- **CA-Node** = node implementation and bootstrap behavior
-- **CA-Control-Plane** = orchestration and management of nodes
-
-In short: this repo makes a host “control-plane-ready.”
-
-Typical flow:
-
-1. Node scripts install/prepare required runtime dependencies.
-2. Node applies base configuration and service setup.
-3. Control plane connects and manages the node lifecycle.
-4. Node receives future updates/operations via control plane workflows.
-
----
-
-## Repository Purpose
-
-Use this repo to:
-
-- bootstrap fresh hosts into CA nodes,
-- configure node-local services/files/users/permissions,
-- enforce a repeatable node baseline.
-
----
-
-## Expected Script Areas
-
-Depending on the current structure, common categories usually include:
-
-- bootstrap/install scripts,
-- host configuration scripts,
-- service setup scripts,
-- health/verification scripts.
-
----
-
-## Quick Start
-
-> Replace script names below with the actual entrypoint scripts in this repository.
-
-```bash
-git clone https://github.com/Starwalk-Datacentre/CA-Node.git
-cd CA-Node
-
-# make scripts executable if needed
-chmod +x *.sh
-
-# run node bootstrap (example)
-./bootstrap-node.sh
-```
-
----
-
-## Recommended Command Table (fill in as needed)
-
-| Script | Purpose | Example |
-|---|---|---|
-| `./bootstrap-node.sh` | Prepare host as CA node | `./bootstrap-node.sh` |
-| `./configure-node.sh` | Apply/reapply node configuration | `./configure-node.sh` |
-| `./healthcheck.sh` | Validate node readiness | `./healthcheck.sh` |
-
----
-
-## Configuration
-
-If scripts rely on environment variables, document them clearly. Example:
-
-- `NODE_ROLE` – role/profile applied on the node
-- `CA_ENV` – environment (`dev`, `staging`, `prod`)
-- `CONTROL_PLANE_URL` – control-plane endpoint/identifier
-- `LOG_LEVEL` – logging verbosity
-
-Example:
-
-```bash
-export NODE_ROLE=worker
-export CA_ENV=prod
-export CONTROL_PLANE_URL=control-plane.internal
-export LOG_LEVEL=info
-./bootstrap-node.sh
-```
-
----
-
-## Validation
-
-After bootstrap/configuration, verify:
-
-- required packages/services are present and running,
-- expected files/configs exist,
-- control plane can reach/manage the node as expected.
-
----
-
-## Dependencies
-
-Likely requirements (adjust to actual scripts):
-
-- POSIX shell / bash
-- core GNU utilities (`sed`, `awk`, `grep`, etc.)
-- package manager tools (`apt`, `yum`, etc., as applicable)
-- optional: `curl`, `jq`
-
----
-
-## Operational Guidelines
-
-- Make scripts idempotent.
-- Avoid hardcoded environment-specific values.
-- Write clear logs for each major step.
-- Fail fast on unrecoverable errors (`set -e` patterns, validation guards).
-
----
-
-## Integration with CA-Control-Plane
-
-This repository is the node-side counterpart of:
-
-- https://github.com/Starwalk-Datacentre/CA-Control-Plane
-
-When updating node bootstrap behavior, check compatibility with control-plane orchestration flow and update both READMEs if the integration contract changes.
+This repository is the node-side counterpart of
+https://github.com/starwalk-datacentre/ca-cp — it makes a host
+"control-plane-ready". When updating node bootstrap behavior here, check
+compatibility with the control-plane enrollment flow and keep both
+repositories in sync.
 
 ---
 
 ## License
 
-Add project license information here.
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE).
